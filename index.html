@@ -200,7 +200,7 @@ input[type=number]{font-variant-numeric:tabular-nums;font-size:22px;font-weight:
 <script>
 /* ============ estado y almacenamiento (en este teléfono) ============ */
 const LS='gymcoach.v1', LS_OLD='gymlog.v1';
-const APP_VERSION='web13';
+const APP_VERSION='web14';
 const STORAGE_MAX=5*1024*1024; let warnedFull=false;
 let lastExport=0; try{ lastExport=+localStorage.getItem('gymcoach.lastExport')||0; }catch(e){}
 let dlNs=undefined;
@@ -332,12 +332,16 @@ function bankUse(name){ const k=norm(name); if(!k) return; if(!bankFind(name)) s
 function bankSearch(q){ const n=norm(q); const words=n.split(' ').filter(Boolean); return bankAll().filter(b=>{ const t=norm(b.name)+' '+norm(b.group); return words.every(w=>t.includes(w)); }); }
 function pickExercise(title){ return new Promise(res=>{ const m=document.getElementById('modal'); let q='';
   const listHtml=()=>{ const items=(q?bankSearch(q):bankAll()).slice(0,q?40:200); const exact=q&&items.some(b=>norm(b.name)===norm(q));
-    return (q&&!exact?`<button class="bk create" data-new="1"><div class="th">＋</div><div class="tx"><b>Crear “${esc(q.trim())}”</b><small>Se guarda en el banco para la próxima</small></div></button>`:'')+
+    const crear = (q&&!exact)
+      ? `<button class="bk create" data-new="1"><div class="th">＋</div><div class="tx"><b>Crear “${esc(q.trim())}”</b><small>Se guarda en el banco para la próxima</small></div></button>`
+      : (q?'':`<button class="bk create" data-new="1"><div class="th">＋</div><div class="tx"><b>Crear un ejercicio nuevo</b><small>Si no está en la lista, agrégalo aquí</small></div></button>`);
+    return crear+
       (items.length?items.map((b,i)=>{ const src=bankSrc(b.name); return `<button class="bk" data-i="${i}"><div class="th">${src?`<img src="${src}" alt="">`:'🏋️'}</div><div class="tx"><b>${esc(b.name)}</b><small>${b.sets}×${b.reps}${src?' · con foto':''}</small></div><div class="tag">${esc(b.group)}</div></button>`; }).join(''):'<div class="empty" style="padding:16px">Nada con ese nombre. Escríbelo y créalo.</div>'); };
   m.innerHTML=`<div class="modal-bg" id="mbg"><div class="modal"><h3>${esc(title)}</h3><input id="m-in" placeholder="Buscar: press, remo, sentadilla…" autocomplete="off"><div class="list" id="m-list">${listHtml()}</div><button id="m-no" class="ghost">Cancelar</button></div></div>`;
   const inp=document.getElementById('m-in'); const list=document.getElementById('m-list'); setTimeout(()=>inp.focus(),50);
   const close=v=>{ m.innerHTML=''; res(v); };
   const bind=()=>{ list.querySelectorAll('.bk').forEach(b=>b.onclick=()=>{ if(b.dataset.new){ close({name:q.trim(),group:'Otros',sets:3,reps:10,isNew:true}); } else { const items=(q?bankSearch(q):bankAll()).slice(0,q?40:200); close(items[+b.dataset.i]); } }); };
+  // el boton "Crear" siempre existe, aunque la lista este vacia
   bind(); inp.oninput=()=>{ q=inp.value; list.innerHTML=listHtml(); bind(); };
   inp.onkeydown=e=>{ if(e.key==='Enter'&&q.trim()){ const items=bankSearch(q); close(items[0]&&norm(items[0].name)===norm(q)?items[0]:{name:q.trim(),group:'Otros',sets:3,reps:10,isNew:true}); } if(e.key==='Escape') close(null); };
   document.getElementById('m-no').onclick=()=>close(null);
@@ -598,9 +602,20 @@ VIEWS.client=function(){
     ${c.notes?`<div class="card" style="padding:14px"><div class="eyebrow">Notas</div><div style="margin-top:6px;white-space:pre-wrap">${esc(c.notes)}</div></div>`:''}`,
     {back:"go({name:'clients'})"});
 };
-async function assignRoutine(cid){ const c=client(cid); const opts=state.routines.filter(r=>!c.routineIds.includes(r.id)).map(r=>({label:r.name,sub:r.exercises.length+' ejercicios',value:r.id}));
-  if(!state.routines.length){ if(await ok('No hay rutinas en la biblioteca','Crea primero una rutina en la pestaña Rutinas y luego asígnala.','Ir a Rutinas')) go({name:'routines'}); return; }
-  const rid=await pick('Asignar rutina a '+c.name,opts,opts.length?'':'Ya tiene todas las rutinas asignadas.'); if(!rid) return; c.routineIds.push(rid); save(); render(); toast('Rutina asignada'); }
+async function assignRoutine(cid){
+  const c=client(cid);
+  const opts=[{label:'+ Crear una rutina nueva',sub:'Se crea y se le asigna a '+c.name.split(' ')[0],value:'__new'},
+              ...state.routines.filter(r=>!c.routineIds.includes(r.id)).map(r=>({label:r.name,sub:r.exercises.length+' ejercicios',value:r.id}))];
+  const rid=await pick('Asignar rutina a '+c.name,opts,state.routines.length?'':'Todavía no hay rutinas en la biblioteca.');
+  if(!rid) return;
+  if(rid==='__new'){
+    const n=await ask('Nueva rutina','',{hint:'Ej. Pierna A, Empuje, Martes espalda',placeholder:'Nombre de la rutina',ok:'Crear'});
+    if(!n) return;
+    const r={id:uid(),name:n,exercises:[]}; state.routines.push(r); c.routineIds.push(r.id); save();
+    toast('Rutina creada y asignada'); go({name:'routine',id:r.id,from:c.id}); return;
+  }
+  c.routineIds.push(rid); save(); render(); toast('Rutina asignada');
+}
 async function unassignRoutine(cid,rid){ const c=client(cid); c.routineIds=c.routineIds.filter(x=>x!==rid); save(); render(); toast('Rutina quitada'); }
 VIEWS.editClient=function(){
   const c=client(view.id); if(!c) return go({name:'clients'});
@@ -726,7 +741,11 @@ VIEWS.routine=function(){
      ${r.exercises.length?`<div class="stickybar"><div class="in"><button class="big primary" onclick="${fc?`startWorkout('${r.id}','${fc.id}')`:`startWorkoutPick('${r.id}')`}">▶ Empezar${fc?' con '+esc(fc.name.split(' ')[0]):' entrenamiento'}</button></div></div>`:''}`,
     {back:fc?`go({name:'client',id:'${fc.id}'})`:"go({name:'routines'})",nav:false});
 };
-async function addEx(rid){ const r=routine(rid); const b=await pickExercise('Agregar ejercicio'); if(!b) return; bankUse(b.name); const e={id:uid(),name:b.name,sets:b.sets||3,reps:b.reps||10,videoUrl:'',mediaId:null,notes:b.notes||''}; const mid=bankMediaOf(b.name); if(mid) state.exmedia[e.id]=mid; r.exercises.push(e); const hasPic=!!(mid||BUILTIN[norm(b.name)]); save(); toast(hasPic?'Agregado con su foto':'Agregado'); if(b.isNew||!hasPic) go({name:'editEx',rid,eid:e.id,from:view.from||''}); else render(); }
+async function addEx(rid){ const r=routine(rid); const b=await pickExercise('Agregar ejercicio'); if(!b) return;
+  if(b.isNew && !b.name){ const n=await ask('Nuevo ejercicio','',{placeholder:'Nombre del ejercicio',hint:'Ej. Sentadilla frontal, Remo Gironda',ok:'Crear'}); if(!n) return; b.name=n; }
+  if(!b.name) return;
+  if(b.isNew && bankFind(b.name)){ const ex=bankFind(b.name); b.sets=ex.sets; b.reps=ex.reps; b.isNew=false; }
+  bankUse(b.name); const e={id:uid(),name:b.name,sets:b.sets||3,reps:b.reps||10,videoUrl:'',mediaId:null,notes:b.notes||''}; const mid=bankMediaOf(b.name); if(mid) state.exmedia[e.id]=mid; r.exercises.push(e); const hasPic=!!(mid||BUILTIN[norm(b.name)]); save(); toast(hasPic?'Agregado con su foto':'Agregado'); if(b.isNew||!hasPic) go({name:'editEx',rid,eid:e.id,from:view.from||''}); else render(); }
 function moveEx(rid,i,d){ const r=routine(rid); const j=i+d; if(j<0||j>=r.exercises.length) return; [r.exercises[i],r.exercises[j]]=[r.exercises[j],r.exercises[i]]; save(); render(); }
 
 VIEWS.editEx=function(){
