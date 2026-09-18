@@ -160,7 +160,7 @@ input[type=number]{font-variant-numeric:tabular-nums;font-size:22px;font-weight:
 <script>
 /* ============ estado y almacenamiento (en este teléfono) ============ */
 const LS='gymcoach.v1', LS_OLD='gymlog.v1';
-const APP_VERSION='web9';
+const APP_VERSION='web10';
 const STORAGE_MAX=5*1024*1024; let warnedFull=false;
 let lastExport=0; try{ lastExport=+localStorage.getItem('gymcoach.lastExport')||0; }catch(e){}
 let dlNs=undefined;
@@ -186,11 +186,15 @@ function migrate(){
   state.routines.forEach(r=>r.exercises.forEach(e=>{ const m=mediaOf(e); if(m&&state.media[m]&&!state.bankMedia[norm(e.name)]) state.bankMedia[norm(e.name)]=m; }));
 }
 function usedBytes(){ try{ return JSON.stringify(state).length; }catch(e){ return 0; } }
+function saveLocalOnly(){
+  try{ localStorage.setItem(LS, JSON.stringify(state)); return true; }
+  catch(e){ ok('Memoria del teléfono llena','No se pudo guardar. Exporta una copia de seguridad ahora mismo y borra sesiones antiguas o fotos propias para liberar espacio.','Entendido'); return false; }
+}
 function save(){
-  try{ localStorage.setItem(LS, JSON.stringify(state)); }
-  catch(e){ ok('Memoria del teléfono llena','No se pudo guardar. Exporta una copia de seguridad ahora mismo y borra sesiones antiguas o fotos propias para liberar espacio.','Entendido'); return; }
+  if(!saveLocalOnly()) return;
   const pct = usedBytes()/STORAGE_MAX;
   if(pct>0.75 && !warnedFull){ warnedFull=true; toast('Atención: memoria al '+Math.round(pct*100)+'%. Exporta una copia.'); }
+  if(typeof scheduleSync==='function') scheduleSync();
 }
 
 /* ============ diálogos propios ============ */
@@ -303,6 +307,118 @@ function bannerHtml(cid){ const c=client(cid); const goal=c.weekGoal||WEEK_GOAL;
   return `<div class="banner" onclick="setGoal('${cid}')"><div class="big">${w.thisW}/${goal}</div><div class="tx"><b>${title}</b>${sub}<div class="dots">${Array.from({length:goal},(_,i)=>`<i class="${i<w.thisW?'on':''}"></i>`).join('')}</div></div></div>`; }
 async function setGoal(cid){ const c=client(cid); const v=await ask('Meta semanal de '+c.name,String(c.weekGoal||WEEK_GOAL),{type:'number',hint:'¿Cuántos entrenamientos por semana?',ok:'Guardar'}); const n=parseInt(v); if(n>0&&n<=7){ c.weekGoal=n; save(); render(); } }
 
+
+/* ============ NUBE (Supabase) ============ */
+const SB_URL='https://jiswuecxlvrqjddkuoqu.supabase.co';
+const SB_KEY='sb_publishable_BvEsP_3ZTy-hiKFFPlSFeg_jQa9lS3r';
+let auth=null, snap={}, syncMsg='', syncBusy=false, syncTimer=null;
+try{ auth=JSON.parse(localStorage.getItem('gymcoach.auth')||'null'); }catch(e){}
+try{ snap=JSON.parse(localStorage.getItem('gymcoach.snap')||'{}'); }catch(e){}
+function saveAuth(){ try{ auth?localStorage.setItem('gymcoach.auth',JSON.stringify(auth)):localStorage.removeItem('gymcoach.auth'); }catch(e){} }
+function saveSnap(){ try{ localStorage.setItem('gymcoach.snap',JSON.stringify(snap)); }catch(e){} }
+
+async function sb(path, opts={}, withAuth=true){
+  const h={apikey:SB_KEY,'Content-Type':'application/json',...(opts.headers||{})};
+  if(withAuth&&auth) h.Authorization='Bearer '+auth.access_token;
+  const r=await fetch(SB_URL+path,{...opts,headers:h});
+  const txt=await r.text();
+  if(!r.ok){ let msg=txt; try{ const j=JSON.parse(txt); msg=j.msg||j.message||j.error_description||j.error||txt; }catch(e){} throw {status:r.status,msg}; }
+  return txt?JSON.parse(txt):null;
+}
+async function cloudLogin(email,password){
+  const d=await sb('/auth/v1/token?grant_type=password',{method:'POST',body:JSON.stringify({email,password})},false);
+  auth={access_token:d.access_token,refresh_token:d.refresh_token,exp:Date.now()+(d.expires_in-120)*1000,email:d.user.email};
+  saveAuth(); return auth;
+}
+async function freshToken(){
+  if(!auth) return false;
+  if(Date.now()<auth.exp) return true;
+  try{ const d=await sb('/auth/v1/token?grant_type=refresh_token',{method:'POST',body:JSON.stringify({refresh_token:auth.refresh_token})},false);
+       auth={...auth,access_token:d.access_token,refresh_token:d.refresh_token,exp:Date.now()+(d.expires_in-120)*1000}; saveAuth(); return true;
+  }catch(e){ return false; }
+}
+function cloudLogout(){ auth=null; snap={}; saveAuth(); saveSnap(); syncMsg=''; render(); }
+
+/* --- traducir entre la app y la base --- */
+const cOut=c=>({id:c.id,name:c.name,goal:c.goal||'',notes:c.notes||'',week_goal:c.weekGoal||null,routine_ids:c.routineIds||[],created:c.created||0,m:c._m||0});
+const cIn=r=>({id:r.id,name:r.name,goal:r.goal||'',notes:r.notes||'',weekGoal:r.week_goal||undefined,routineIds:r.routine_ids||[],created:r.created||0,_m:r.m||0});
+const rOut=r=>({id:r.id,name:r.name,exercises:r.exercises||[],m:r._m||0});
+const rIn=x=>({id:x.id,name:x.name,exercises:x.exercises||[],_m:x.m||0});
+const lOut=l=>({id:l.id,client_id:l.clientId,client_name:l.clientName||'',routine_id:l.routineId,routine_name:l.routineName||'',date:l.date,duration:l.duration||null,entries:l.entries||{},m:l._m||0});
+const lIn=x=>({id:x.id,clientId:x.client_id,clientName:x.client_name||'',routineId:x.routine_id,routineName:x.routine_name||'',date:x.date,duration:x.duration||undefined,entries:x.entries||{},_m:x.m||0});
+
+/* --- detectar qué cambió desde la última sincronización --- */
+const sig=o=>{ const c={...o}; delete c._m; return JSON.stringify(c); };
+const bankSig=()=>JSON.stringify([state.bank,state.bankMedia,Object.keys(state.media).sort()]);
+function stampChanges(){
+  const t=Date.now(); let n=0;
+  const walk=(arr,pfx)=>arr.forEach(o=>{ const k=pfx+o.id, j=sig(o); if(snap[k]!==j){ o._m=t; n++; } });
+  walk(state.clients,'c:'); walk(state.routines,'r:'); walk(state.logs,'l:');
+  if(snap['bank']!==bankSig()){ state.bankM=t; n++; }
+  return n;
+}
+function markDel(kind,id){ state.dels=state.dels||[]; if(!state.dels.includes(kind+':'+id)) state.dels.push(kind+':'+id); }
+
+/* --- sincronizar --- */
+function scheduleSync(){ if(!auth) return; clearTimeout(syncTimer); syncTimer=setTimeout(()=>syncNow(), 2500); }
+async function syncNow(manual){
+  if(!auth||syncBusy) return;
+  if(!navigator.onLine){ syncMsg='Sin conexión'; if(view.name==='settings') render(); return; }
+  syncBusy=true; syncMsg='Sincronizando…'; if(view.name==='settings') render();
+  try{
+    if(!await freshToken()) throw {msg:'Sesión vencida, vuelve a entrar'};
+    stampChanges();
+    // borrados pendientes
+    for(const d of (state.dels||[])){
+      const [k,id]=d.split(':'); const tbl=k==='c'?'clients':k==='r'?'routines':'logs';
+      try{ await sb(`/rest/v1/${tbl}?id=eq.${encodeURIComponent(id)}`,{method:'DELETE'}); }catch(e){ if(e.status!==404) throw e; }
+    }
+    state.dels=[];
+    // bajar
+    const [rc,rr,rl,rb]=await Promise.all([
+      sb('/rest/v1/clients?select=*'), sb('/rest/v1/routines?select=*'),
+      sb('/rest/v1/logs?select=*'), sb('/rest/v1/bank?select=*')]);
+    const mergeList=(remote,local,conv,pfx)=>{
+      const by={}; local.forEach(o=>by[o.id]=o);
+      remote.forEach(x=>{ const l=by[x.id]; const inc=conv(x);
+        if(!l){ local.push(inc); by[x.id]=inc; }
+        else if((x.m||0)>(l._m||0)){ Object.keys(l).forEach(k=>delete l[k]); Object.assign(l,inc); } });
+    };
+    mergeList(rc,state.clients,cIn,'c:'); mergeList(rr,state.routines,rIn,'r:'); mergeList(rl,state.logs,lIn,'l:');
+    if(rb&&rb[0]&&(rb[0].m||0)>(state.bankM||0)){ const d=rb[0].data||{};
+      state.bank=d.bank||state.bank; state.bankMedia={...state.bankMedia,...(d.bankMedia||{})}; state.media={...state.media,...(d.media||{})}; state.bankM=rb[0].m; }
+    migrate();
+    // subir lo que sea más nuevo aquí
+    const up=(arr,conv,pfx,tbl)=>{ const pend=arr.filter(o=>{ const k=pfx+o.id; return snap[k]!==sig(o); }).map(conv);
+      return pend.length? sb(`/rest/v1/${tbl}`,{method:'POST',headers:{Prefer:'resolution=merge-duplicates'},body:JSON.stringify(pend)}) : null; };
+    await Promise.all([ up(state.clients,cOut,'c:','clients'), up(state.routines,rOut,'r:','routines'), up(state.logs,lOut,'l:','logs') ].filter(Boolean));
+    if(snap['bank']!==bankSig()){
+      await sb('/rest/v1/bank',{method:'POST',headers:{Prefer:'resolution=merge-duplicates'},
+        body:JSON.stringify([{data:{bank:state.bank,bankMedia:state.bankMedia,media:state.media},m:state.bankM||Date.now()}])});
+    }
+    snap={}; state.clients.forEach(o=>snap['c:'+o.id]=sig(o)); state.routines.forEach(o=>snap['r:'+o.id]=sig(o)); state.logs.forEach(o=>snap['l:'+o.id]=sig(o)); snap['bank']=bankSig();
+    saveSnap(); saveLocalOnly();
+    syncMsg='Al día · '+new Date().toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit'});
+    if(manual) toast('Sincronizado con la nube');
+  }catch(e){
+    syncMsg='Error: '+((e&&e.msg)||'no se pudo sincronizar');
+    if(manual) toast(syncMsg);
+  }finally{ syncBusy=false; render(); }
+}
+window.addEventListener('online',()=>{ if(auth) syncNow(); });
+
+async function doLogin(){
+  const m=(document.getElementById('sb-mail')||{}).value, pw=(document.getElementById('sb-pass')||{}).value;
+  if(!m||!pw){ toast('Escribe correo y contraseña'); return; }
+  toast('Conectando…');
+  try{ await cloudLogin(m.trim(),pw); toast('Conectado'); render(); await syncNow(true); }
+  catch(e){ const msg=(e&&e.msg)||''; toast(/Invalid login|invalid_grant|credentials/i.test(msg)?'Correo o contraseña incorrectos':('No se pudo conectar: '+msg)); }
+}
+async function askLogout(){
+  if(!await ok('¿Cerrar sesión en la nube?','Los datos se quedan en este teléfono. Para volver a sincronizar tendrás que entrar de nuevo.','Cerrar sesión')) return;
+  cloudLogout(); toast('Sesión cerrada');
+}
+
 /* ============ navegación ============ */
 let view={name:'clients'};
 const go=v=>{ view=v; render(); window.scrollTo(0,0); };
@@ -323,7 +439,7 @@ VIEWS.clients=function(){
   const list=[...state.clients].sort((a,b)=>a.name.localeCompare(b.name)).map(c=>{ const w=weekInfo(c.id); const rn=c.routineIds.length;
     const meta=w.last?`Última sesión ${fmtDate(w.last.date)} · ${w.thisW}/${c.weekGoal||WEEK_GOAL} esta semana`:(rn?`${rn} rutina${rn!==1?'s':''} asignada${rn!==1?'s':''} · sin sesiones aún`:'Sin rutinas asignadas');
     return `<button class="item" onclick="go({name:'client',id:'${c.id}'})"><div class="av">${esc(initials(c.name))}</div><div class="body"><div class="name">${esc(c.name)}</div><div class="meta">${meta}${w.days>=3?' · <span style="color:var(--accent)">⚠ inactivo</span>':''}</div></div><div class="go">›</div></button>`; }).join('');
-  shell('Clientes',`<span class="status"><i></i>${state.clients.length} cliente${state.clients.length!==1?'s':''} · ${APP_VERSION}</span>`,
+  shell('Clientes',`<span class="status"><i style="background:${auth?(syncBusy?'var(--accent)':'var(--ok)'):'var(--ink3)'}"></i>${auth?(syncBusy?'Sincronizando…':'En la nube'):'Solo en este teléfono'} · ${state.clients.length} cliente${state.clients.length!==1?'s':''}</span>`,
     (list||`<div class="empty"><div class="big-ico">👥</div>Todavía no hay clientes.<br>Agrega el primero y asígnale una rutina.</div>`)+
     `<button class="big primary" onclick="newClient()">+ Nuevo cliente</button>`);
 };
@@ -361,7 +477,7 @@ VIEWS.editClient=function(){
     {back:`go({name:'client',id:'${c.id}'})`,nav:false});
 };
 function saveClient(id){ const c=client(id); c.name=document.getElementById('c-name').value.trim()||c.name; c.goal=document.getElementById('c-goal').value.trim(); c.notes=document.getElementById('c-notes').value.trim(); const g=parseInt(document.getElementById('c-goalw').value); if(g>0&&g<=7) c.weekGoal=g; save(); toast('Guardado'); go({name:'client',id}); }
-async function removeClient(id){ const c=client(id); const n=logsOf(id).length; if(!await ok(`¿Eliminar a ${c.name}?`,n?`Se borrarán también sus ${n} sesiones registradas. Esto no se puede deshacer.`:'No tiene sesiones registradas.','Eliminar')) return; state.clients=state.clients.filter(x=>x.id!==id); state.logs=state.logs.filter(l=>l.clientId!==id); save(); go({name:'clients'}); }
+async function removeClient(id){ const c=client(id); const n=logsOf(id).length; if(!await ok(`¿Eliminar a ${c.name}?`,n?`Se borrarán también sus ${n} sesiones registradas. Esto no se puede deshacer.`:'No tiene sesiones registradas.','Eliminar')) return; logsOf(id).forEach(l=>markDel('l',l.id)); markDel('c',id); state.clients=state.clients.filter(x=>x.id!==id); state.logs=state.logs.filter(l=>l.clientId!==id); save(); go({name:'clients'}); }
 
 /* ============ BIBLIOTECA DE RUTINAS ============ */
 VIEWS.routines=function(){
@@ -375,7 +491,7 @@ VIEWS.routines=function(){
 async function newRoutine(){ const name=await ask('Nueva rutina','',{hint:'Ej. Pierna A, Espalda y tríceps, Full body',placeholder:'Nombre de la rutina',ok:'Crear'}); if(!name) return; const r={id:uid(),name,exercises:[]}; state.routines.push(r); save(); go({name:'routine',id:r.id}); }
 async function renameRoutine(id){ const r=routine(id); const n=await ask('Renombrar rutina',r.name,{ok:'Guardar'}); if(n){ r.name=n; save(); render(); } }
 async function duplicateRoutine(id){ const r=routine(id); const n=await ask('Duplicar rutina',r.name+' (copia)',{hint:'Se copian los ejercicios con sus fotos. Útil para hacer variantes.',ok:'Duplicar'}); if(!n) return; const nr={id:uid(),name:n,exercises:r.exercises.map(e=>{ const ne={...e,id:uid()}; if(mediaOf(e)) state.exmedia[ne.id]=mediaOf(e); return ne; })}; state.routines.push(nr); save(); go({name:'routine',id:nr.id}); }
-async function removeRoutine(id){ const r=routine(id); const n=state.clients.filter(c=>c.routineIds.includes(r.id)).length; if(!await ok(`¿Borrar “${r.name}”?`,n?`Está asignada a ${n} cliente${n!==1?'s':''}. El historial de sesiones se conserva.`:'El historial de sesiones se conserva.','Borrar')) return; state.routines=state.routines.filter(x=>x.id!==id); state.clients.forEach(c=>c.routineIds=c.routineIds.filter(x=>x!==id)); save(); go({name:'routines'}); }
+async function removeRoutine(id){ const r=routine(id); const n=state.clients.filter(c=>c.routineIds.includes(r.id)).length; if(!await ok(`¿Borrar “${r.name}”?`,n?`Está asignada a ${n} cliente${n!==1?'s':''}. El historial de sesiones se conserva.`:'El historial de sesiones se conserva.','Borrar')) return; markDel('r',id); state.routines=state.routines.filter(x=>x.id!==id); state.clients.forEach(c=>c.routineIds=c.routineIds.filter(x=>x!==id)); save(); go({name:'routines'}); }
 
 VIEWS.routine=function(){
   const r=routine(view.id); if(!r) return go({name:'routines'});
@@ -522,7 +638,7 @@ VIEWS.logDetail=function(){
     <div class="eyebrow">Volumen total: ${volume(l).toLocaleString('es')} kg${l.duration?' · '+mmss(l.duration)+' min':''}</div>
     <div class="eyebrow">Resumen de progreso</div>
     <div class="card" style="padding:4px 14px">${fbHtml(feedback(l))}</div>
-    <button class="danger" onclick="ok('¿Borrar este registro?','Esta sesión desaparecerá del historial.','Borrar').then(y=>{ if(y){ state.logs=state.logs.filter(x=>x.id!=='${l.id}'); save(); go({name:'client',id:'${l.clientId}'}); } })">Borrar registro</button>`,
+    <button class="danger" onclick="ok('¿Borrar este registro?','Esta sesión desaparecerá del historial.','Borrar').then(y=>{ if(y){ markDel('l','${l.id}'); state.logs=state.logs.filter(x=>x.id!=='${l.id}'); save(); go({name:'client',id:'${l.clientId}'}); } })">Borrar registro</button>`,
     {back:c?`go({name:'client',id:'${c.id}'})`:"go({name:'history'})"});
 };
 VIEWS.stats=function(){
@@ -545,7 +661,18 @@ VIEWS.settings=function(){
   const aviso = days===null
     ? '<div class="banner" style="border:1px solid var(--accent)"><div class="big">!</div><div class="tx"><b>Nunca has hecho una copia</b>Si pierdes el teléfono o borras los datos del navegador, se pierde todo el registro. Exporta ahora y guarda el archivo en Drive o WhatsApp.</div></div>'
     : (days>=7 ? `<div class="banner" style="border:1px solid var(--accent)"><div class="big">${days}</div><div class="tx"><b>Días desde tu última copia</b>Conviene exportar una vez por semana.</div></div>` : '');
+  const nube = auth
+    ? `<div class="card" style="padding:14px"><div class="sec"><div class="eyebrow">Nube</div><span class="status"><i style="background:var(--ok)"></i>Conectado</span></div>
+        <p style="margin:8px 0;color:var(--ink2);font-size:14px">Sesión de <b>${esc(auth.email)}</b>. Todo se guarda en el teléfono y sube a la nube solo. Si pierdes el celular, los datos siguen ahí.</p>
+        <div class="eyebrow" style="margin-bottom:8px">${esc(syncMsg||'Listo para sincronizar')}</div>
+        <div class="row"><button onclick="syncNow(true)" ${syncBusy?'disabled':''}>${syncBusy?'Sincronizando…':'↻ Sincronizar ahora'}</button><button class="danger" onclick="askLogout()">Cerrar sesión</button></div></div>`
+    : `<div class="card" style="padding:14px"><div class="sec"><div class="eyebrow">Nube</div><span class="status"><i></i>Sin conectar</span></div>
+        <p style="margin:8px 0;color:var(--ink2);font-size:14px">Ahora los datos viven solo en este teléfono. Conéctate para que se guarden también en la nube y puedas abrirlos desde otro dispositivo.</p>
+        <div class="field"><label class="lbl">Correo</label><input id="sb-mail" type="email" autocomplete="username" placeholder="correo@ejemplo.com"></div>
+        <div class="field"><label class="lbl">Contraseña</label><input id="sb-pass" type="password" autocomplete="current-password"></div>
+        <button class="primary" style="margin-top:10px" onclick="doLogin()">Conectar a la nube</button></div>`;
   shell('Ajustes',`Versión ${APP_VERSION}`,`
+    ${nube}
     ${aviso}
     <div class="card" style="padding:14px"><div class="eyebrow">Copia de seguridad</div><p style="margin:6px 0 10px;color:var(--ink2);font-size:14px">Todos los datos viven en este teléfono. Exporta un archivo cada semana y guárdalo en Drive o WhatsApp. Con él restauras todo en otro celular o en otra dirección web.</p>
       <div class="eyebrow" style="margin-bottom:4px">Espacio usado: ${kb} KB de 5 MB (${pct}%)</div>
@@ -571,6 +698,7 @@ async function importData(inp){ const f=inp.files[0]; if(!f) return; try{ const 
 
 /* ============ inicio ============ */
 loadLocal(); render();
+if(auth) setTimeout(()=>syncNow(), 800);
 if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
 </script>
 </body></html>
