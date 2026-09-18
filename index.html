@@ -174,6 +174,22 @@ input[type=number]{font-variant-numeric:tabular-nums;font-size:22px;font-weight:
 .mrow .dt{font-family:"Barlow Condensed";font-weight:700;color:var(--accent);min-width:64px;font-variant-numeric:tabular-nums}
 .mrow .vals{flex:1;font-variant-numeric:tabular-nums;font-size:14px}
 .tagline{display:inline-block;background:var(--accent-soft);color:var(--accent);font-size:12px;font-weight:700;padding:3px 8px;border-radius:8px}
+
+.demo{position:fixed;inset:0;z-index:60;background:var(--bg);display:flex;flex-direction:column;overflow:auto}
+.demo .top{padding:14px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:2}
+.demo .top h2{font-family:"Barlow Condensed";font-size:26px;text-transform:uppercase;margin:0;font-weight:700;flex:1;line-height:1.05}
+.demo .pic{width:100%;background:var(--surface2);display:flex;align-items:center;justify-content:center}
+.demo .pic img{width:100%;height:auto;display:block;max-height:62vh;object-fit:contain}
+.demo .pic iframe,.demo .pic video{width:100%;aspect-ratio:16/9;border:0;display:block}
+.demo .body{padding:16px;display:flex;flex-direction:column;gap:14px;max-width:700px;margin:0 auto;width:100%}
+.cues{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px}
+.cues li{font-size:16px;line-height:1.4}
+.cues.bad li::marker{color:#C8402A}
+.exhead{display:flex;gap:14px;align-items:flex-start}
+.exhead .pic{width:132px;flex:none;aspect-ratio:3/2;border-radius:14px;overflow:hidden;background:var(--surface2);display:flex;align-items:center;justify-content:center;color:var(--ink3);font-size:26px}
+.exhead .pic img{width:100%;height:100%;object-fit:cover}
+.exhead .meta{flex:1;min-width:0}
+.exhead .meta h2{font-family:"Barlow Condensed";font-size:24px;text-transform:uppercase;margin:0 0 4px;font-weight:700;line-height:1.05}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 </head><body>
@@ -184,7 +200,7 @@ input[type=number]{font-variant-numeric:tabular-nums;font-size:22px;font-weight:
 <script>
 /* ============ estado y almacenamiento (en este teléfono) ============ */
 const LS='gymcoach.v1', LS_OLD='gymlog.v1';
-const APP_VERSION='web12';
+const APP_VERSION='web13';
 const STORAGE_MAX=5*1024*1024; let warnedFull=false;
 let lastExport=0; try{ lastExport=+localStorage.getItem('gymcoach.lastExport')||0; }catch(e){}
 let dlNs=undefined;
@@ -201,7 +217,7 @@ function loadLocal(){
   migrate();
 }
 function migrate(){
-  state.bank=state.bank||[]; state.bankMedia=state.bankMedia||{};
+  state.bank=state.bank||[]; state.bankMedia=state.bankMedia||{}; state.bankHidden=state.bankHidden||[];
   state.clients=state.clients||[]; state.routines=state.routines||[]; state.logs=state.logs||[]; state.media=state.media||{}; state.exmedia=state.exmedia||{};
   const orphan=state.logs.filter(l=>!l.clientId);
   if(orphan.length){ let c=state.clients.find(x=>x.id==='c_default'); if(!c){ c={id:'c_default',name:'Sin asignar',goal:'',notes:'',routineIds:[],created:Date.now()}; state.clients.push(c); } orphan.forEach(l=>l.clientId=c.id); }
@@ -257,7 +273,59 @@ const BANK=[
  ['Cardio','Caminadora (minutos)',1,20],['Cardio','Bicicleta estática (minutos)',1,20],['Cardio','Elíptica (minutos)',1,20],['Cardio','Remo máquina (minutos)',1,10],['Cardio','Escaladora (minutos)',1,10],['Cardio','Cuerda para saltar (minutos)',1,5],
 ].map(([group,name,sets,reps])=>({name,group,sets,reps,builtin:true}));
 const norm=s=>String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\(.*?\)/g,'').replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
-function bankAll(){ const seen=new Set(); const out=[]; [...state.bank,...BANK].forEach(b=>{ const k=norm(b.name); if(seen.has(k)) return; seen.add(k); out.push(b); }); return out; }
+
+/* claves de técnica por ejercicio */
+const CUES={
+'jalon al pecho en polea':{t:['Muslos firmes bajo el rodillo, no despegues la cadera','Agarre un poco más ancho que los hombros','Lleva la barra al pecho, no a la nuca','Codos hacia abajo y atrás, pecho arriba','Sube controlando, sin soltar de golpe'],e:['Echarse muy atrás y balancearse','Jalar solo con los brazos en vez de la espalda']},
+'jalon al pecho agarre supino':{t:['Palmas hacia ti, manos al ancho de hombros','Codos pegados al cuerpo todo el recorrido','Barra al pecho alto','Aprieta la espalda abajo un segundo'],e:['Curvar la muñeca','Abrir los codos hacia los lados']},
+'jalon en maquina hammer':{t:['Pecho apoyado si la máquina lo permite','Tira de los agarres hacia abajo y atrás','Un brazo por lado, corrige si uno domina'],e:['Encoger los hombros al jalar']},
+'remo sentado en polea':{t:['Rodillas algo flexionadas, pies firmes','Espalda recta y vertical, sin mecerse','Lleva el agarre al ombligo','Junta los omóplatos al final'],e:['Usar el impulso del tronco','Encoger los hombros']},
+'remo en maquina':{t:['Pecho pegado al apoyo todo el tiempo','Codos hacia atrás, rozando las costillas','Aprieta la espalda alta un segundo'],e:['Despegar el pecho del apoyo para mover más peso']},
+'remo con barra':{t:['Cadera atrás, espalda recta, tronco a 45 grados','Barra pegada al cuerpo','Lleva la barra al ombligo','Mirada al suelo adelante'],e:['Redondear la espalda baja','Incorporarse con cada repetición']},
+'remo con mancuerna a una mano':{t:['Rodilla y mano apoyadas en el banco','Espalda plana, cadera nivelada','Sube la mancuerna hacia la cadera','Baja estirando la espalda'],e:['Rotar el tronco para ayudarse']},
+'remo en t':{t:['Pecho contra el apoyo','Tira hasta el pecho, codos atrás','Controla la bajada'],e:['Despegar el pecho']},
+'dominadas':{t:['Agarre un poco más ancho que los hombros','Sube hasta pasar el mentón de la barra','Baja hasta estirar los codos','Si no sales, usa banda o asistida'],e:['Balancearse para subir','Recorrido a medias']},
+'peso muerto convencional':{t:['Barra pegada a las espinillas','Pecho arriba, espalda recta','Empuja el suelo con los pies','Cadera y hombros suben juntos'],e:['Redondear la espalda baja','Tirar con los brazos']},
+'peso muerto rumano':{t:['Piernas casi rectas, rodillas suaves','Lleva la cadera hacia atrás','Barra rozando los muslos','Baja hasta sentir el tirón atrás del muslo'],e:['Doblar mucho las rodillas','Curvar la espalda']},
+'press banca con barra':{t:['Pies firmes en el suelo','Omóplatos juntos y hundidos','Baja la barra al centro del pecho','Codos a unos 45 grados, no abiertos del todo'],e:['Rebotar la barra en el pecho','Despegar la cadera del banco']},
+'press banca inclinado con barra':{t:['Banco entre 30 y 45 grados','Barra a la parte alta del pecho','Mismos codos a 45 grados'],e:['Inclinar demasiado y convertirlo en press de hombro']},
+'press plano con mancuernas':{t:['Baja hasta que los codos queden a la altura del pecho','Muñecas firmes, no dobladas atrás','Arriba sin chocar las mancuernas'],e:['Bajar demasiado y forzar el hombro']},
+'press inclinado con mancuernas':{t:['Banco a 30 grados','Codos algo por debajo de la línea de hombros','Sube en ligera diagonal'],e:['Abrir los codos en exceso']},
+'aperturas con mancuernas':{t:['Codos algo flexionados y fijos','Abre hasta sentir estiramiento, sin pasarte','Cierra como si abrazaras'],e:['Convertirlo en press doblando los codos','Bajar demasiado']},
+'cruce de poleas':{t:['Un pie adelante para estabilizar','Tronco ligeramente inclinado','Junta las manos delante del pecho','Aprieta un segundo al cerrar'],e:['Usar el peso del cuerpo para empujar']},
+'press de pecho en maquina':{t:['Espalda apoyada, hombros abajo','Agarres a la altura del pecho','Empuja sin bloquear de golpe'],e:['Adelantar los hombros al empujar']},
+'pec deck':{t:['Antebrazos planos contra las almohadillas','Codos a la altura de los hombros','Junta delante del pecho y aprieta'],e:['Subir los hombros']},
+'fondos en paralelas':{t:['Tronco algo inclinado adelante para pecho','Baja hasta que el codo quede a 90 grados','Codos cerca del cuerpo'],e:['Bajar demasiado y forzar el hombro']},
+'sentadilla con barra':{t:['Pies al ancho de hombros, puntas algo afuera','Barra sobre los trapecios, no sobre el cuello','Baja llevando la cadera atrás y abajo','Rodillas hacia afuera, siguiendo las puntas','Pecho arriba, mirada al frente'],e:['Juntar las rodillas al subir','Levantar los talones','Redondear la espalda abajo']},
+'sentadilla hack':{t:['Espalda pegada al respaldo','Pies a media plataforma','Baja hasta 90 grados o algo más'],e:['Despegar la espalda baja']},
+'prensa de piernas':{t:['Pies al ancho de hombros, a media plataforma','Baja hasta unos 90 grados de rodilla','Espalda baja pegada al asiento','No bloquees las rodillas arriba'],e:['Levantar la cadera del asiento','Bajar tanto que se despegue la espalda']},
+'extension de cuadriceps':{t:['Rodillas alineadas con el eje de la máquina','Sube hasta estirar','Baja controlando'],e:['Lanzar el peso con impulso']},
+'curl femoral tumbado':{t:['Cadera pegada al banco','Sube los talones hacia los glúteos','Baja despacio'],e:['Levantar la cadera para ayudarse']},
+'curl femoral sentado':{t:['Almohadilla sobre los muslos, bien ajustada','Empuja con la parte de atrás del tobillo'],e:['Deslizarse en el asiento']},
+'zancadas con mancuernas':{t:['Paso largo, tronco vertical','Rodilla de atrás casi al suelo','Empuja con el talón de adelante'],e:['Rodilla de adelante muy pasada de la punta del pie']},
+'sentadilla bulgara':{t:['Pie de atrás sobre el banco, empeine apoyado','Peso en la pierna de adelante','Tronco algo inclinado'],e:['Apoyar demasiado peso en la pierna de atrás']},
+'sentadilla goblet':{t:['Mancuerna pegada al pecho','Codos entre las rodillas al bajar','Espalda recta'],e:['Separar la mancuerna del cuerpo']},
+'hip thrust':{t:['Omóplatos en el borde del banco','Barbilla al pecho, mirada adelante','Sube hasta que el tronco quede paralelo al suelo','Aprieta los glúteos arriba'],e:['Arquear la espalda baja al subir']},
+'gemelos de pie':{t:['Sube lo más alto posible sobre las puntas','Baja hasta estirar el gemelo','Recorrido completo y lento'],e:['Rebotar sin estirar']},
+'press militar con barra':{t:['Pies al ancho de cadera, glúteos apretados','Barra desde la clavícula','Mete la cabeza al pasar la barra','Termina con la barra sobre la cabeza'],e:['Arquear mucho la espalda baja','Empujar la barra hacia adelante']},
+'press de hombro con mancuernas':{t:['Espalda apoyada, pies firmes','Codos algo adelante, no del todo abiertos','Sube sin chocar las mancuernas'],e:['Arquear la espalda','Bajar demasiado los codos']},
+'elevaciones laterales':{t:['Codos ligeramente flexionados','Sube hasta la altura del hombro, no más','Guía el movimiento con el codo','Baja despacio'],e:['Usar impulso del tronco','Encoger los trapecios']},
+'pajaros':{t:['Tronco inclinado con espalda recta','Abre los brazos hacia los lados','Aprieta la parte de atrás del hombro'],e:['Usar demasiado peso y tirar con la espalda']},
+'face pull en polea':{t:['Polea a la altura de la cara','Tira la cuerda hacia la frente','Codos altos y abiertos','Separa las manos al final'],e:['Bajar los codos y convertirlo en remo']},
+'curl con barra':{t:['Codos pegados al costado, fijos','Sube hasta el pecho','Baja controlando hasta estirar','Sin balancear el tronco'],e:['Mecer el cuerpo','Adelantar los codos']},
+'curl martillo':{t:['Palmas enfrentadas todo el recorrido','Codos quietos al costado'],e:['Girar la muñeca al subir']},
+'curl predicador':{t:['Axilas apoyadas en la almohadilla','Baja hasta casi estirar','Sube sin despegar los brazos'],e:['Estirar de golpe abajo']},
+'extension triceps en polea con cuerda':{t:['Codos pegados a las costillas, fijos','Baja hasta estirar del todo','Separa las puntas de la cuerda al final','Tronco algo inclinado y quieto'],e:['Mover los codos hacia adelante','Ayudarse con el peso del cuerpo']},
+'extension triceps en polea con barra':{t:['Codos fijos al costado','Empuja hasta estirar','Muñecas firmes'],e:['Abrir los codos']},
+'extension triceps sobre cabeza con mancuerna':{t:['Codos apuntando al techo','Baja detrás de la cabeza','Sube sin abrir los codos'],e:['Abrir los codos hacia los lados']},
+'press frances':{t:['Codos quietos apuntando arriba','Baja hacia la frente','Sube sin mover el hombro'],e:['Mover los codos hacia atrás']},
+'plancha':{t:['Codos bajo los hombros','Cuerpo en línea recta de cabeza a talones','Aprieta abdomen y glúteos','Respira, no aguantes el aire'],e:['Subir la cadera','Dejar caer la espalda baja']},
+'crunch abdominal':{t:['Manos en el pecho o a los lados de la cabeza','Sube despegando solo los omóplatos','Exhala al subir'],e:['Tirar del cuello con las manos']},
+'elevacion de piernas colgado':{t:['Cuelga sin balancear','Sube las piernas rectas','Baja controlando'],e:['Usar impulso']}
+};
+const cuesOf=name=>CUES[norm(name)]||null;
+
+function bankAll(){ const hid=new Set(state.bankHidden||[]); const seen=new Set(); const out=[]; [...state.bank,...BANK].forEach(b=>{ const k=norm(b.name); if(seen.has(k)||(b.builtin&&hid.has(k))) return; seen.add(k); out.push(b); }); return out; }
 function bankFind(name){ const k=norm(name); return bankAll().find(b=>norm(b.name)===k)||null; }
 function bankMediaOf(name){ const m=state.bankMedia[norm(name)]; return m&&state.media[m]?m:null; }
 function bankUse(name){ const k=norm(name); if(!k) return; if(!bankFind(name)) state.bank.push({name:name.trim(),group:'Otros',sets:3,reps:10}); }
@@ -685,15 +753,22 @@ VIEWS.bank=function(){
   const g=view.group||'Todos'; const q=view.q||'';
   let items=q?bankSearch(q):bankAll(); if(g!=='Todos') items=items.filter(b=>b.group===g);
   const groups=['Todos',...BANK_GROUPS,...(state.bank.some(b=>b.group==='Otros')?['Otros']:[])];
-  const rows=items.map(b=>{ const src=bankSrc(b.name); return `<button class="bk" onclick="bankItem('${esc(b.name).replace(/'/g,"\\'")}')"><div class="th">${src?`<img src="${src}" alt="">`:'🏋️'}</div><div class="tx"><b>${esc(b.name)}</b><small>${b.sets}×${b.reps}${b.builtin?'':' · creado por ti'}${src?' · 📷':''}</small></div><div class="tag">${esc(b.group)}</div></button>`; }).join('');
+  const rows=items.map(b=>{ const src=bankSrc(b.name); return `<button class="bk" onclick="go({name:'exercise',ex:'${esc(b.name).replace(/'/g,"\\'")}'})"><div class="th">${src?`<img src="${src}" alt="">`:'🏋️'}</div><div class="tx"><b>${esc(b.name)}</b><small>${b.sets}×${b.reps}${b.builtin?'':' · creado por ti'}${src?' · 📷':''}</small></div><div class="tag">${esc(b.group)}</div></button>`; }).join('');
   shell('Banco de ejercicios',`${items.length} ejercicios`,`
     <input id="bk-q" placeholder="Buscar ejercicio…" value="${esc(q)}" oninput="view.q=this.value;renderKeep('bk-q')">
     <div class="chips">${groups.map(x=>`<button class="chip ${x===g?'on':''}" onclick="view.group='${x}';render()">${x}</button>`).join('')}</div>
     <div class="card">${rows||'<div class="empty">Nada con ese nombre.</div>'}</div>
+    <button class="big" onclick="newBankItem()">+ Crear ejercicio nuevo</button>
     <p style="color:var(--ink2);font-size:14px;margin:0">Toca un ejercicio para ponerle foto. Esa foto se usa automáticamente cada vez que lo agregues a una rutina.</p>
     <div class="card" style="padding:14px"><div class="eyebrow">Fotos en lote</div><p style="margin:6px 0 10px;color:var(--ink2);font-size:14px">Si tienes muchas imágenes listas, nómbralas igual que el ejercicio y súbelas todas de una vez. La app las reparte sola.</p><div class="row"><button onclick="document.getElementById('bulk').click()">⬆ Subir varias fotos</button><button class="ghost" onclick="exportNames()">📄 Lista de nombres</button></div><input type="file" id="bulk" accept="image/*" multiple hidden onchange="bulkImport(this)"></div>`,
     {back:"go({name:'routines'})"});
 };
+async function newBankItem(){
+  const n=await ask('Nuevo ejercicio','',{placeholder:'Nombre del ejercicio',hint:'Se agrega al banco para usarlo en cualquier rutina',ok:'Crear'});
+  if(!n) return;
+  if(bankFind(n)){ toast('Ya existe uno con ese nombre'); return; }
+  state.bank.push({name:n,group:'Otros',sets:3,reps:10}); save(); go({name:'exercise',ex:n});
+}
 function renderKeep(id){ const el=document.getElementById(id); const pos=el.selectionStart; render(); const n=document.getElementById(id); if(n){ n.focus(); n.setSelectionRange(pos,pos); } }
 let bankTarget=null;
 async function bankItem(name){ const b=bankFind(name); if(!b) return; const src=bankSrc(name);
@@ -722,6 +797,93 @@ async function bulkImport(inp){ const files=[...inp.files]; inp.value=''; if(!fi
   const kb=Math.round(JSON.stringify(state).length/1024);
   render(); await ok(`${done} foto${done!==1?'s':''} cargada${done!==1?'s':''}`,`El banco ocupa ahora ${kb} KB.${kb>4000?' Cuidado: cerca del límite del teléfono. Exporta una copia de seguridad y considera usar menos fotos.':''}${failed.length?` No se pudieron asignar ${failed.length}.`:''}`,'Listo'); }
 
+VIEWS.exercise=function(){
+  const b=bankFind(view.ex); if(!b) return go({name:'bank'});
+  const src=bankSrc(b.name), c=cuesOf(b.name), usos=state.routines.filter(r=>r.exercises.some(e=>norm(e.name)===norm(b.name)));
+  const vid=b.video||'';
+  shell('Ejercicio',esc(b.group||''),`
+    <div class="card" style="padding:14px">
+      <div class="exhead">
+        <div class="pic">${src?`<img src="${src}" alt="${esc(b.name)}">`:'🏋️'}</div>
+        <div class="meta"><h2>${esc(b.name)}</h2>
+          <div style="color:var(--ink2)">${b.sets}×${b.reps} por defecto</div>
+          ${b.builtin?'':'<div class="tagline" style="margin-top:6px">creado por ti</div>'}</div>
+      </div>
+    </div>
+    <button class="big primary" onclick="demo('${esc(b.name).replace(/'/g,"\\'")}')">👁 Mostrar al cliente</button>
+    ${c?`<div class="card" style="padding:14px"><div class="eyebrow">Claves de técnica</div><ul class="cues" style="margin-top:8px">${c.t.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`:''}
+    ${c&&c.e?`<div class="card" style="padding:14px"><div class="eyebrow">Errores frecuentes</div><ul class="cues bad" style="margin-top:8px">${c.e.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`:''}
+    ${b.notes?`<div class="card" style="padding:14px"><div class="eyebrow">Tus notas</div><div style="margin-top:6px;white-space:pre-wrap">${esc(b.notes)}</div></div>`:''}
+    ${vid?`<div class="media">${embed(vid)}</div>`:''}
+    ${usos.length?`<div class="card" style="padding:4px 14px"><div class="detail-row"><div><b>Se usa en</b><br><small style="color:var(--ink2)">${usos.map(r=>esc(r.name)).join(', ')}</small></div></div></div>`:''}
+    <div class="row"><button onclick="go({name:'editBank',ex:'${esc(b.name).replace(/'/g,"\\'")}'})">✏️ Editar</button><button onclick="bankPhotoFor('${esc(b.name).replace(/'/g,"\\'")}')">📷 ${src?'Cambiar':'Poner'} foto</button></div>`,
+    {back:"go({name:'bank'})"});
+};
+function demo(name){
+  const b=bankFind(name); if(!b) return;
+  const src=bankSrc(name), c=cuesOf(name);
+  const m=document.getElementById('modal');
+  m.innerHTML=`<div class="demo" id="demo">
+    <div class="top"><button class="icon ghost" onclick="closeDemo()" aria-label="Cerrar">✕</button><h2>${esc(b.name)}</h2></div>
+    <div class="pic">${src?`<img src="${src}" alt="${esc(b.name)}">`:(b.video?embed(b.video):'<div style="padding:60px;color:var(--ink3)">Sin imagen</div>')}</div>
+    <div class="body">
+      <div class="eyebrow">${esc(b.group||'')} · ${b.sets} series × ${b.reps} reps</div>
+      ${c?`<div><div class="eyebrow" style="margin-bottom:6px">Cómo se hace</div><ul class="cues">${c.t.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`:''}
+      ${c&&c.e?`<div><div class="eyebrow" style="margin-bottom:6px">Evitar</div><ul class="cues bad">${c.e.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`:''}
+      ${b.notes?`<div><div class="eyebrow" style="margin-bottom:6px">Notas</div><div style="white-space:pre-wrap">${esc(b.notes)}</div></div>`:''}
+      ${src&&b.video?`<div class="media">${embed(b.video)}</div>`:''}
+    </div></div>`;
+}
+function closeDemo(){ document.getElementById('modal').innerHTML=''; }
+
+VIEWS.editBank=function(){
+  const b=bankFind(view.ex); if(!b) return go({name:'bank'});
+  const groups=[...BANK_GROUPS,'Otros'];
+  shell('Editar ejercicio',esc(b.name),`
+    <div class="field"><label class="lbl">Nombre</label><input id="b-name" value="${esc(b.name)}"></div>
+    <div class="two">
+      <div class="field"><label class="lbl">Grupo muscular</label><select id="b-group">${groups.map(g=>`<option value="${esc(g)}" ${b.group===g?'selected':''}>${g}</option>`).join('')}</select></div>
+      <div class="field"><label class="lbl">Equipo</label><input id="b-eq" value="${esc(b.equip||'')}" placeholder="Barra, mancuerna, polea…"></div>
+    </div>
+    <div class="two">
+      <div class="field"><label class="lbl">Series por defecto</label><input id="b-sets" type="number" inputmode="numeric" value="${b.sets||3}"></div>
+      <div class="field"><label class="lbl">Reps por defecto</label><input id="b-reps" type="number" inputmode="numeric" value="${b.reps||10}"></div>
+    </div>
+    <div class="field"><label class="lbl">Video (YouTube o .mp4)</label><input id="b-video" type="url" value="${esc(b.video||'')}" placeholder="https://youtube.com/…"></div>
+    <div class="field"><label class="lbl">Tus notas de técnica</label><textarea id="b-notes" placeholder="Lo que sueles corregirle a los clientes en este ejercicio">${esc(b.notes||'')}</textarea></div>
+    <button class="danger" onclick="delBank('${esc(b.name).replace(/'/g,"\\'")}')">Quitar del banco</button>
+    <div class="stickybar"><div class="in"><button class="big primary" onclick="saveBank('${esc(b.name).replace(/'/g,"\\'")}')">Guardar</button></div></div>`,
+    {back:`go({name:'exercise',ex:'${esc(b.name).replace(/'/g,"\\'")}'})`,nav:false});
+};
+function saveBank(oldName){
+  const b=bankFind(oldName); if(!b) return;
+  const v=x=>{ const e=document.getElementById(x); return e?e.value.trim():''; };
+  const nuevo=v('b-name')||b.name;
+  const rec={name:nuevo,group:v('b-group')||b.group,equip:v('b-eq'),video:v('b-video'),notes:v('b-notes'),
+             sets:+v('b-sets')||b.sets,reps:+v('b-reps')||b.reps};
+  const kOld=norm(oldName), kNew=norm(nuevo);
+  if(b.builtin){ state.bankHidden=[...new Set([...(state.bankHidden||[]),kOld])]; }
+  state.bank=(state.bank||[]).filter(x=>norm(x.name)!==kOld);
+  state.bank.push(rec);
+  if(kOld!==kNew && state.bankMedia[kOld]){ state.bankMedia[kNew]=state.bankMedia[kOld]; delete state.bankMedia[kOld]; }
+  state.routines.forEach(r=>r.exercises.forEach(e=>{ if(norm(e.name)===kOld) e.name=nuevo; }));
+  save(); toast('Guardado'); go({name:'exercise',ex:nuevo});
+}
+async function delBank(name){
+  const b=bankFind(name); if(!b) return;
+  if(!await ok(`¿Quitar “${b.name}” del banco?`,'Las rutinas que ya lo usan no cambian.','Quitar')) return;
+  const k=norm(name);
+  if(b.builtin) state.bankHidden=[...new Set([...(state.bankHidden||[]),k])];
+  state.bank=(state.bank||[]).filter(x=>norm(x.name)!==k);
+  delete state.bankMedia[k]; gcMedia(); save(); go({name:'bank'});
+}
+function bankPhotoFor(name){
+  bankTarget=name;
+  let f=document.getElementById('bk-file');
+  if(!f){ f=document.createElement('input'); f.type='file'; f.accept='image/*'; f.id='bk-file'; f.hidden=true; f.onchange=bankPhoto; document.body.appendChild(f); }
+  f.value=''; f.click();
+}
+
 /* ============ ENTRENAMIENTO ============ */
 let session=null, tickId=null;
 async function startWorkoutPick(rid){ const opts=state.clients.map(c=>({label:c.name,sub:c.goal||'',value:c.id})); if(!opts.length){ if(await ok('No hay clientes','Crea primero un cliente en la pestaña Clientes.','Ir a Clientes')) go({name:'clients'}); return; } const cid=await pick('¿Con qué cliente?',opts); if(!cid) return; const c=client(cid); if(!c.routineIds.includes(rid)){ c.routineIds.push(rid); save(); } startWorkout(rid,cid); }
@@ -742,7 +904,7 @@ VIEWS.workout=function(){
       <h2>${esc(e.name)}</h2>
       <div class="last">${last?`Última vez (${fmtDate(last.date)}): <b>${last.sets.map(s=>`${s.reps}×${s.weight}kg`).join(' · ')}</b>`:'Primera vez que registra este ejercicio'}${e.notes?`<br>📝 ${esc(e.notes)}`:''}</div>
       <div class="sets"><div></div><div class="h">Reps</div><div class="h">Peso kg</div><div></div>${rows}</div>
-      <div class="row" style="margin-top:12px"><button class="ghost" onclick="addSet()">+ Serie</button><button class="ghost" onclick="removeSet()">– Serie</button><button class="ghost" onclick="setRest()">⏱ ${Math.round(REST/60*10)/10} min</button></div>
+      <div class="row" style="margin-top:12px"><button class="ghost" onclick="demo('${esc(e.name).replace(/'/g,"\\'")}')">👁 Técnica</button><button class="ghost" onclick="addSet()">+ Serie</button><button class="ghost" onclick="removeSet()">– Serie</button><button class="ghost" onclick="setRest()">⏱ ${Math.round(REST/60*10)/10} min</button></div>
     </div>
     <div class="stickybar"><div class="in">
       <button onclick="session.idx=Math.max(0,session.idx-1);render()" ${session.idx===0?'disabled':''}>‹ Anterior</button>
