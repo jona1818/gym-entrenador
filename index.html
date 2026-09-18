@@ -184,7 +184,7 @@ input[type=number]{font-variant-numeric:tabular-nums;font-size:22px;font-weight:
 <script>
 /* ============ estado y almacenamiento (en este teléfono) ============ */
 const LS='gymcoach.v1', LS_OLD='gymlog.v1';
-const APP_VERSION='web11';
+const APP_VERSION='web12';
 const STORAGE_MAX=5*1024*1024; let warnedFull=false;
 let lastExport=0; try{ lastExport=+localStorage.getItem('gymcoach.lastExport')||0; }catch(e){}
 let dlNs=undefined;
@@ -449,11 +449,20 @@ async function syncNow(manual){
     syncMsg='Al día · '+new Date().toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit'});
     if(manual) toast('Sincronizado con la nube');
   }catch(e){
-    syncMsg='Error: '+((e&&e.msg)||'no se pudo sincronizar');
-    if(manual) toast(syncMsg);
+    const raw=(e&&e.msg)||'';
+    if(/column .*(profile|measures).* does not exist/i.test(raw)){
+      syncMsg='Falta actualizar la base de datos';
+      if(manual) ok('Falta un paso en Supabase','Hay que agregar dos columnas nuevas (profile y measures) a la tabla de clientes. Pídeselo a quien montó la base; es una sola línea de SQL.','Entendido');
+    } else {
+      syncMsg='Error: '+(raw||'no se pudo sincronizar');
+      if(manual) toast(syncMsg);
+    }
   }finally{ syncBusy=false; render(); }
 }
 window.addEventListener('online',()=>{ if(auth) syncNow(); });
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden && auth) syncNow(); });
+window.addEventListener('focus',()=>{ if(auth) syncNow(); });
+setInterval(()=>{ if(auth && !document.hidden && navigator.onLine && view.name!=='workout') syncNow(); }, 25000);
 
 async function doLogin(){
   const m=(document.getElementById('sb-mail')||{}).value, pw=(document.getElementById('sb-pass')||{}).value;
@@ -488,7 +497,7 @@ VIEWS.clients=function(){
     const meta=w.last?`Última sesión ${fmtDate(w.last.date)} · ${w.thisW}/${c.weekGoal||WEEK_GOAL} esta semana`:(rn?`${rn} rutina${rn!==1?'s':''} asignada${rn!==1?'s':''} · sin sesiones aún`:'Sin rutinas asignadas');
     const age=ageOf(c), g=prof(c).goalType||c.goal, al=parqFlags(c).length;
     return `<button class="item" onclick="go({name:'client',id:'${c.id}'})"><div class="av">${esc(initials(c.name))}</div><div class="body"><div class="name">${esc(c.name)}${al?' <span class="tagline">⚠ salud</span>':''}</div><div class="meta">${[age?age+' años':'',g].filter(Boolean).join(' · ')}${(age||g)?'<br>':''}${meta}${w.days>=3?' · <span style="color:var(--accent)">⚠ inactivo</span>':''}</div></div><div class="go">›</div></button>`; }).join('');
-  shell('Clientes',`<span class="status"><i style="background:${auth?(syncBusy?'var(--accent)':'var(--ok)'):'var(--ink3)'}"></i>${auth?(syncBusy?'Sincronizando…':'En la nube'):'Solo en este teléfono'} · ${state.clients.length} cliente${state.clients.length!==1?'s':''}</span>`,
+  shell('Clientes',`<span class="status" onclick="go({name:'settings'})" style="cursor:pointer"><i style="background:${auth?(syncBusy?'var(--accent)':'var(--ok)'):'var(--accent)'}"></i>${auth?(syncBusy?'Sincronizando…':'En la nube'):'Solo en este teléfono · tocar para conectar'}${auth?' · '+state.clients.length+' cliente'+(state.clients.length!==1?'s':''):''}</span>`,
     (list||`<div class="empty"><div class="big-ico">👥</div>Todavía no hay clientes.<br>Agrega el primero y asígnale una rutina.</div>`)+
     `<button class="big primary" onclick="newClient()">+ Nuevo cliente</button>`);
 };
