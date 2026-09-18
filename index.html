@@ -160,7 +160,9 @@ input[type=number]{font-variant-numeric:tabular-nums;font-size:22px;font-weight:
 <script>
 /* ============ estado y almacenamiento (en este teléfono) ============ */
 const LS='gymcoach.v1', LS_OLD='gymlog.v1';
-const APP_VERSION='web8';
+const APP_VERSION='web9';
+const STORAGE_MAX=5*1024*1024; let warnedFull=false;
+let lastExport=0; try{ lastExport=+localStorage.getItem('gymcoach.lastExport')||0; }catch(e){}
 let dlNs=undefined;
 let state={clients:[],routines:[],logs:[],media:{},exmedia:{},bank:[],bankMedia:{}};
 let REST=180, WEEK_GOAL=2;
@@ -183,7 +185,13 @@ function migrate(){
   // toda foto puesta en un ejercicio alimenta el banco por nombre
   state.routines.forEach(r=>r.exercises.forEach(e=>{ const m=mediaOf(e); if(m&&state.media[m]&&!state.bankMedia[norm(e.name)]) state.bankMedia[norm(e.name)]=m; }));
 }
-function save(){ try{ localStorage.setItem(LS, JSON.stringify(state)); }catch(e){ toast('No se pudo guardar: memoria llena'); } }
+function usedBytes(){ try{ return JSON.stringify(state).length; }catch(e){ return 0; } }
+function save(){
+  try{ localStorage.setItem(LS, JSON.stringify(state)); }
+  catch(e){ ok('Memoria del teléfono llena','No se pudo guardar. Exporta una copia de seguridad ahora mismo y borra sesiones antiguas o fotos propias para liberar espacio.','Entendido'); return; }
+  const pct = usedBytes()/STORAGE_MAX;
+  if(pct>0.75 && !warnedFull){ warnedFull=true; toast('Atención: memoria al '+Math.round(pct*100)+'%. Exporta una copia.'); }
+}
 
 /* ============ diálogos propios ============ */
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -532,9 +540,16 @@ function spark(v){ if(v.length<2) return ''; const w=100,h=26,mx=Math.max(...v),
 
 /* ============ AJUSTES Y COPIA DE SEGURIDAD ============ */
 VIEWS.settings=function(){
-  const kb=Math.round((JSON.stringify(state).length)/1024);
+  const used=usedBytes(); const kb=Math.round(used/1024); const pct=Math.min(100,Math.round(used/STORAGE_MAX*100));
+  const days=lastExport?Math.floor((Date.now()-lastExport)/864e5):null;
+  const aviso = days===null
+    ? '<div class="banner" style="border:1px solid var(--accent)"><div class="big">!</div><div class="tx"><b>Nunca has hecho una copia</b>Si pierdes el teléfono o borras los datos del navegador, se pierde todo el registro. Exporta ahora y guarda el archivo en Drive o WhatsApp.</div></div>'
+    : (days>=7 ? `<div class="banner" style="border:1px solid var(--accent)"><div class="big">${days}</div><div class="tx"><b>Días desde tu última copia</b>Conviene exportar una vez por semana.</div></div>` : '');
   shell('Ajustes',`Versión ${APP_VERSION}`,`
-    <div class="card" style="padding:14px"><div class="eyebrow">Copia de seguridad</div><p style="margin:6px 0 10px;color:var(--ink2);font-size:14px">Todos los datos viven en este teléfono (${kb} KB). Exporta un archivo cada semana y guárdalo en Drive o WhatsApp. Con él restauras todo en otro celular.</p><div class="row"><button onclick="exportData()">⬇ Exportar</button><button onclick="document.getElementById('imp').click()">⬆ Importar</button></div><input type="file" id="imp" accept="application/json,.json" hidden onchange="importData(this)"></div>
+    ${aviso}
+    <div class="card" style="padding:14px"><div class="eyebrow">Copia de seguridad</div><p style="margin:6px 0 10px;color:var(--ink2);font-size:14px">Todos los datos viven en este teléfono. Exporta un archivo cada semana y guárdalo en Drive o WhatsApp. Con él restauras todo en otro celular o en otra dirección web.</p>
+      <div class="eyebrow" style="margin-bottom:4px">Espacio usado: ${kb} KB de 5 MB (${pct}%)</div>
+      <div class="progress" style="margin-bottom:10px"><i style="width:${Math.max(2,pct)}%;background:${pct>75?'#C8402A':'var(--accent)'}"></i></div><div class="row"><button onclick="exportData()">⬇ Exportar</button><button onclick="document.getElementById('imp').click()">⬆ Importar</button></div><input type="file" id="imp" accept="application/json,.json" hidden onchange="importData(this)"></div>
     <div class="card" style="padding:14px"><div class="eyebrow">Valores por defecto</div><div class="detail-row"><div>Descanso entre series</div><button class="ghost" onclick="setRest()">${Math.round(REST/60*10)/10} min ›</button></div><div class="detail-row"><div>Meta semanal para clientes nuevos</div><button class="ghost" onclick="setDefaultGoal()">${WEEK_GOAL} por semana ›</button></div></div>
     <div class="card" style="padding:14px"><div class="eyebrow">Resumen</div><div class="detail-row"><div>Clientes</div><div>${state.clients.length}</div></div><div class="detail-row"><div>Rutinas en biblioteca</div><div>${state.routines.length}</div></div><div class="detail-row"><div>Sesiones registradas</div><div>${state.logs.length}</div></div><div class="detail-row"><div>Ejercicios en el banco</div><div>${bankAll().length}</div></div><div class="detail-row"><div>Fotos guardadas</div><div>${Object.keys(state.media).length} propias + ${Object.keys(BUILTIN).length} de fábrica</div></div></div>`);
 };
@@ -547,7 +562,7 @@ async function saveFile(filename, text, mime){
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([text],{type:mime})); a.download=filename;
   document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },500); toast('Archivo descargado');
 }
-function exportData(){ saveFile('gym-backup-'+new Date().toISOString().slice(0,10)+'.json', JSON.stringify({v:2,app:'gymcoach',exported:Date.now(),...state}), 'application/json'); }
+function exportData(){ saveFile('gym-backup-'+new Date().toISOString().slice(0,10)+'.json', JSON.stringify({v:2,app:'gymcoach',exported:Date.now(),...state}), 'application/json'); lastExport=Date.now(); try{ localStorage.setItem('gymcoach.lastExport',lastExport); }catch(e){} }
 async function importData(inp){ const f=inp.files[0]; if(!f) return; try{ const d=JSON.parse(await f.text()); if(!d.routines) throw 0;
     const mode=await pick('¿Cómo importar?',[{label:'Sumar a lo que ya hay',sub:`Agrega ${d.routines.length} rutinas${d.clients?`, ${d.clients.length} clientes`:''} y ${(d.logs||[]).length} sesiones sin borrar nada`,value:'merge'},{label:'Reemplazar todo',sub:'Borra lo actual y deja solo lo del archivo',value:'replace'}]); if(!mode) return;
     if(mode==='replace'){ state={clients:d.clients||[],routines:d.routines||[],logs:d.logs||[],media:d.media||{},exmedia:d.exmedia||{},bank:d.bank||[],bankMedia:d.bankMedia||{}}; }
